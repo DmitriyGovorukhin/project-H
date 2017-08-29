@@ -18,12 +18,17 @@ interface HidDeviceListener {
 
 private val NA = "N/A"
 
-class HidConfiguration(val scanFreq: Long = 2000L)
+class HidConfiguration(val scanFreq: Long = 2000L, val mod: String = "hid")
 
 class HidDeviceManager(
         private val hidConfig: HidConfiguration = HidConfiguration()
 ) {
-    private val hid = HID
+    private val hid = when (hidConfig.mod) {
+        "hid" -> HID
+        "hidraw" -> HID_RAW
+        else -> throw IllegalArgumentException(
+                "Incorrect hid type:${hidConfig.mod}, supported only 'hid' or 'hidraw'")
+    }
 
     private val listeners = CopyOnWriteArrayList<HidDeviceListener>()
 
@@ -39,7 +44,7 @@ class HidDeviceManager(
         Runtime.getRuntime().addShutdownHook(
                 object : Thread() {
                     override fun run() {
-                        reloadHid()
+                        //reloadHid()
                     }
                 })
     }
@@ -330,6 +335,6 @@ class HidDevice(
                 "interfaceNumber=$interfaceNumber]"
     }
 
-    private fun Short.toHexString(): String = "0x"+Integer.toHexString(this.toInt())
+    private fun Short.toHexString(): String = "0x" + Integer.toHexString(this.toInt())
 }
 

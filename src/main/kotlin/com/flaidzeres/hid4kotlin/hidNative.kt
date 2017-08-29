@@ -6,6 +6,8 @@ import kotlin.experimental.or
 
 var HID = Native.loadLibrary("hidapi", NativeHidApi::class.java) as NativeHidApi
 
+var HID_RAW = Native.loadLibrary("hidapi-hidraw", NativeHidApi::class.java) as NativeHidApi
+
 interface NativeHidApi : Library {
 
     fun hid_init()

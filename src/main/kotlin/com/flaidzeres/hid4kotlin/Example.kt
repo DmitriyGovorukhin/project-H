@@ -4,9 +4,9 @@ import java.nio.ByteBuffer
 import java.util.*
 
 fun main(args: Array<String>) {
-    val mgr = HidDeviceManager(HidConfiguration(scanFreq = 5_000L))
+    val mgr1 = HidDeviceManager(HidConfiguration(mod = "hid"))
 
-    val l = object : HidDeviceListener {
+    val l1 = object : HidDeviceListener {
         override fun onConnect(d: HidDevice) {
             println("Device connected: ${d.id}")
         }
@@ -16,24 +16,42 @@ fun main(args: Array<String>) {
         }
     }
 
-    mgr += l
+    mgr1 += l1
 
-    mgr.start()
+    mgr1.start()
 
-    printDevices(mgr)
+    printDevices(mgr1)
 
-    mgr -= l
+    mgr1 -= l1
 
-    mgr.stop()
+    mgr1.stop()
+
+    val mgr2 = HidDeviceManager(HidConfiguration(mod = "hidraw"))
+
+    val l2 = object : HidDeviceListener {
+        override fun onConnect(d: HidDevice) {
+            println("Device connected: ${d.id}")
+        }
+
+        override fun onDisconnect(d: HidDevice) {
+            println("Device disconnected: ${d.id}")
+        }
+    }
+
+    mgr2 += l2
+
+    mgr2.start()
+
+    printDevices(mgr2)
+
+    mgr2 -= l2
+
+    mgr2.stop()
 }
 
 private fun printDevices(mgr: HidDeviceManager) {
     for (d in mgr.devices())
         println(d)
-
-    println("Wait 1 minutes.")
-
-    Thread.sleep(60_000)
 }
 
 private fun readKeyBoard(mgr: HidDeviceManager) {
