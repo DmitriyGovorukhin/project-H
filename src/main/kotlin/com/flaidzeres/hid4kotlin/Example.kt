@@ -4,93 +4,42 @@ import java.nio.ByteBuffer
 import java.util.*
 
 fun main(args: Array<String>) {
-    val mgr1 = HidDeviceManager(HidConfiguration(mod = "hid"))
-
     val l1 = object : HidDeviceListener {
         override fun onConnect(d: HidDevice) {
-            println("Device connected: ${d.id}")
+            println("Connected: $d")
         }
 
         override fun onDisconnect(d: HidDevice) {
-            println("Device disconnected: ${d.id}")
+            println("Disconnected: $d")
         }
     }
 
-    mgr1 += l1
+    val mgr = HidDeviceManager(mod = HIDRAW)
 
-    mgr1.start()
+    mgr += l1
 
-    printDevices(mgr1)
+    mgr.open {
+        val d = device("/dev/hidraw3")
 
-    mgr1 -= l1
+        d.open {
+            val buf = ByteBuffer.allocate(16)
 
-    mgr1.stop()
+            val arr = buf.array()
 
-    val mgr2 = HidDeviceManager(HidConfiguration(mod = "hidraw"))
+            var cnt = 1000
 
-    val l2 = object : HidDeviceListener {
-        override fun onConnect(d: HidDevice) {
-            println("Device connected: ${d.id}")
-        }
+            while (true) {
+                if (cnt <= 0)
+                    break
 
-        override fun onDisconnect(d: HidDevice) {
-            println("Device disconnected: ${d.id}")
-        }
-    }
+                read(arr)
 
-    mgr2 += l2
+                println(Arrays.toString(arr))
 
-    mgr2.start()
+                buf.clear()
 
-    printDevices(mgr2)
-
-    mgr2 -= l2
-
-    mgr2.stop()
-}
-
-private fun printDevices(mgr: HidDeviceManager) {
-    for (d in mgr.devices())
-        println(d)
-}
-
-private fun readKeyBoard(mgr: HidDeviceManager) {
-    val d = mgr.device(0x04d9, 0x1702)
-
-    if (d != null) {
-        if (d.open())
-            println("Opened")
-
-        println(d)
-
-        try {
-            if (d.isOpen()) {
-                d.nonBlocking(true)
-
-                val end = System.currentTimeMillis() + 10_000
-
-                val buf = ByteBuffer.allocate(16)
-
-                while (true) {
-                    val arr = buf.array()
-
-                    val read = d.read(arr)
-
-                    if (read != 0) {
-                        println("read:$read " + Arrays.toString(arr))
-                    } else
-                        println("Nothing to read")
-
-                    buf.clear()
-
-                    Thread.sleep(100)
-
-                    if (System.currentTimeMillis() - end > 0)
-                        break
-                }
+                cnt--
             }
-        } finally {
-            d.close()
         }
     }
 }

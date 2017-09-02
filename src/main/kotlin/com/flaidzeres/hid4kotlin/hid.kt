@@ -9,6 +9,64 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.collections.ArrayList
 
+abstract class MOD
+
+object HID : MOD()
+object HIDRAW : MOD()
+
+interface HidDevice : AutoCloseable {
+    fun read(bytes: ByteArray, timeOut: Int = 0): Int
+
+    fun write(bytes: ByteArray): Int
+
+    fun open(): Boolean
+
+    fun open(block: HidDevice.() -> Unit)
+
+    fun isOpen(): Boolean
+
+    fun error(): String
+
+    fun nonBlocking(mod: Boolean): Int
+
+    fun id(): String
+
+    fun serialNumber(): String
+
+    fun product(): String
+
+    fun manufacturer(): String
+
+    fun vendorId(): Short
+
+    fun productId(): Short
+
+    fun releaseNumber(): Short
+
+    fun usagePage(): Short
+
+    fun usage(): Short
+
+    fun interfaceNumber(): Int
+}
+
+interface HidDeviceManager : AutoCloseable {
+    companion object {
+        operator fun invoke(scanFreq: Long = 5000L, mod: MOD = HID): HidDeviceManager = DeviceManager(scanFreq, mod)
+    }
+
+    fun open(block: HidDeviceManager.() -> Unit)
+
+    fun devices(): List<HidDevice>
+
+    fun device(vendorId: Short, productId: Short): HidDevice
+
+    fun device(id: String): HidDevice
+
+    operator fun plusAssign(l: HidDeviceListener)
+
+    operator fun minusAssign(l: HidDeviceListener)
+}
 
 interface HidDeviceListener {
     fun onConnect(d: HidDevice)
@@ -16,29 +74,27 @@ interface HidDeviceListener {
     fun onDisconnect(d: HidDevice)
 }
 
+class DeviceNotFound : Exception()
+
 private val NA = "N/A"
 
-class HidConfiguration(val scanFreq: Long = 2000L, val mod: String = "hid")
-
-class HidDeviceManager(
-        private val hidConfig: HidConfiguration = HidConfiguration()
-) {
-    private val hid = when (hidConfig.mod) {
-        "hid" -> HID
-        "hidraw" -> HID_RAW
+private class DeviceManager(
+        private val scanFreq: Long, mod: MOD
+) : HidDeviceManager {
+    private val hid = when (mod) {
+        is HID -> HID_API
+        is HIDRAW -> HID_API_RAW
         else -> throw IllegalArgumentException(
-                "Incorrect hid type:${hidConfig.mod}, supported only 'hid' or 'hidraw'")
+                "Incorrect hid type:$mod, supported only 'hid' or 'hidraw'")
     }
 
     private val listeners = CopyOnWriteArrayList<HidDeviceListener>()
 
-    private val readyDevices = ConcurrentHashMap<String, HidDevice>()
+    private val readyDevices = ConcurrentHashMap<String, Device>()
 
-    private val init = AtomicBoolean()
+    private val scanner: Thread
 
-    private var scanner: Thread? = null
-
-    private var initLatch: CountDownLatch? = null
+    private val init = CountDownLatch(1)
 
     init {
         Runtime.getRuntime().addShutdownHook(
@@ -47,6 +103,12 @@ class HidDeviceManager(
                         //reloadHid()
                     }
                 })
+
+        hid.hid_init()
+
+        scanner = initScanner()
+
+        scanner.isDaemon = true
     }
 
     private fun reloadHid() {
@@ -95,34 +157,16 @@ class HidDeviceManager(
 
     private fun initScanner(): Thread {
         return Thread({
+            findDevices()
+
+            init.countDown()
+
             while (!Thread.interrupted()) {
                 try {
-                    val devices = scan()
+                    Thread.sleep(scanFreq)
 
-                    val deviceIds = HashSet<String>(devices.map { it.id })
+                    findDevices()
 
-                    devices.forEach({ d ->
-                        val id = d.id
-
-                        if (!readyDevices.containsKey(id)) {
-                            listeners.forEach({ l -> l.onConnect(d) })
-
-                            readyDevices.put(id, d)
-                        }
-                    })
-
-                    readyDevices.forEach({ id, d ->
-                        if (!deviceIds.contains(id)) {
-
-                            listeners.forEach({ l -> l.onDisconnect(d) })
-                        } else
-                            deviceIds -= id
-                    })
-
-                    if (init.compareAndSet(false, true))
-                        initLatch!!.countDown()
-
-                    Thread.sleep(hidConfig.scanFreq)
                 } catch (e: InterruptedException) {
 
                     Thread.currentThread().interrupt()
@@ -131,20 +175,42 @@ class HidDeviceManager(
         })
     }
 
-    private fun scan(): List<HidDevice> {
-        val devices = ArrayList<HidDevice>()
+    private fun findDevices() {
+        val devices = scan()
+
+        val deviceIds = HashSet<String>(devices.map { it.id })
+
+        devices.forEach({ d ->
+            val id = d.id
+
+            if (!readyDevices.containsKey(id)) {
+                listeners.forEach({ l -> l.onConnect(d) })
+
+                readyDevices.put(id, d)
+            }
+        })
+
+        readyDevices.forEach({ id, d ->
+            if (!deviceIds.contains(id))
+                listeners.forEach({ l -> l.onDisconnect(d) })
+
+        })
+    }
+
+    private fun scan(): List<Device> {
+        val devices = ArrayList<Device>()
 
         var devInfo = hid.hid_enumerate(0, 0)
 
         val root = devInfo
 
         try {
-            devices += createHidDevice(root)
+            devices += createDeviceWrapper(root)
 
             while (true) {
                 devInfo = devInfo.next ?: break
 
-                devices += createHidDevice(devInfo)
+                devices += createDeviceWrapper(devInfo)
             }
         } finally {
             hid.hid_free_enumeration(root.pointer)
@@ -153,7 +219,7 @@ class HidDeviceManager(
         return devices
     }
 
-    private fun createHidDevice(devInfo: DeviceInfo) = HidDevice(
+    private fun createDeviceWrapper(devInfo: DeviceInfo) = Device(
             id = devInfo.path ?: NA,
             serialNumber = devInfo.serial_number?.toString() ?: NA,
             product = devInfo.product_string?.toString() ?: NA,
@@ -167,56 +233,48 @@ class HidDeviceManager(
             hid = hid
     )
 
-    fun devices(): List<HidDevice> {
-        val view = ArrayList<HidDevice>(readyDevices.values)
+    override fun open(block: HidDeviceManager.() -> Unit) {
+        scanner.start()
+
+        init.await()
+
+        use {
+            block.invoke(this)
+        }
+    }
+
+    override fun devices(): List<HidDevice> {
+        val view = ArrayList<Device>(readyDevices.values)
 
         view.sortBy { it.id }
 
         return view
     }
 
-    fun device(vendorId: Short, productId: Short): HidDevice? {
-        return devices().firstOrNull { (it.vendorId == vendorId) and (it.productId == productId) }
+    override fun device(id: String): HidDevice {
+        val d = devices().firstOrNull { (it.id() == id) }
+
+        return d ?: throw DeviceNotFound()
     }
 
-    fun addListener(l: HidDeviceListener) {
+    override fun device(vendorId: Short, productId: Short): HidDevice {
+        val d = devices().firstOrNull { (it.vendorId() == vendorId) and (it.productId() == productId) }
+
+        return d ?: throw DeviceNotFound()
+    }
+
+    override operator fun plusAssign(l: HidDeviceListener) {
         listeners += l
     }
 
-    fun removeListener(l: HidDeviceListener) {
+    override operator fun minusAssign(l: HidDeviceListener) {
         listeners -= l
     }
 
-    operator fun plusAssign(l: HidDeviceListener) {
-        addListener(l)
-    }
+    override fun close() {
+        scanner.interrupt()
 
-    operator fun minusAssign(l: HidDeviceListener) {
-        removeListener(l)
-    }
-
-    fun start() {
-        hid.hid_init()
-
-        initLatch = CountDownLatch(1)
-
-        scanner = initScanner()
-
-        scanner!!.start()
-
-        initLatch!!.await()
-    }
-
-    fun stop() {
-        val needReload = if (init.compareAndSet(false, true)) {
-            initLatch?.countDown()
-
-            true
-        } else false
-
-        scanner?.interrupt()
-
-        scanner?.join()
+        scanner.join()
 
         val it = readyDevices.iterator()
 
@@ -234,12 +292,10 @@ class HidDeviceManager(
         assert(readyDevices.isEmpty())
 
         hid.hid_exit()
-
-        if (needReload) reloadHid()
     }
 }
 
-class HidDevice(
+private class Device(
         val id: String,
         val serialNumber: String,
         val product: String,
@@ -251,12 +307,23 @@ class HidDevice(
         val usage: Short,
         val interfaceNumber: Int,
         private val hid: NativeHidApi,
-        private val dev: Device = Device(),
+        private val dev: NativeDevice = NativeDevice(),
         private val buf: Buffer = Buffer(),
         private val init: AtomicBoolean = AtomicBoolean(),
         private val bytes: Int = 1024
-) {
-    fun open(): Boolean {
+) : HidDevice {
+    override fun id(): String = id
+    override fun serialNumber(): String = serialNumber
+    override fun product(): String = product
+    override fun manufacturer(): String = manufacturer
+    override fun vendorId(): Short = vendorId
+    override fun productId(): Short = productId
+    override fun releaseNumber(): Short = releaseNumber
+    override fun usagePage(): Short = usagePage
+    override fun usage(): Short = usage
+    override fun interfaceNumber(): Int = interfaceNumber
+
+    override fun open(): Boolean {
         return if (init.compareAndSet(false, true)) {
             dev.ptr = hid.hid_open_path(id)
 
@@ -265,7 +332,7 @@ class HidDevice(
             }
 
             if (dev.ptr != null) {
-                println("Device opened: ${vendorId.toHexString()} ${productId.toHexString()}")
+                println("HID device opened: ${vendorId.toHexString()} ${productId.toHexString()}")
 
                 true
             } else
@@ -274,15 +341,20 @@ class HidDevice(
             false
     }
 
-    fun isOpen(): Boolean = init.get() and (dev.ptr != null)
-
-    fun nonBlocking(f: Boolean): Int {
-        validate()
-
-        return hid.hid_set_nonblocking(dev.ptr!!, if (f) 1 else 0)
+    override fun open(block: HidDevice.() -> Unit) {
+        if (open())
+            this.use { block.invoke(this) }
     }
 
-    fun read(bytes: ByteArray, timeOut: Int = 0): Int {
+    override fun isOpen(): Boolean = init.get() and (dev.ptr != null)
+
+    override fun nonBlocking(mod: Boolean): Int {
+        validate()
+
+        return hid.hid_set_nonblocking(dev.ptr!!, if (mod) 1 else 0)
+    }
+
+    override fun read(bytes: ByteArray, timeOut: Int): Int {
         if (timeOut < 0)
             throw IllegalArgumentException("Timeout can not be less 0.")
 
@@ -290,13 +362,13 @@ class HidDevice(
 
         buf.buffer = bytes
 
-        return if (timeOut == -1)
+        return if (timeOut == 0)
             hid.hid_read(dev.ptr!!, buf, bytes.size)
         else
             hid.hid_read_timeout(dev.ptr!!, buf, bytes.size, timeOut)
     }
 
-    fun error(): String {
+    override fun error(): String {
         validate()
 
         buf.buffer = hid.hid_error(dev.ptr!!).getByteArray(0, bytes)
@@ -304,7 +376,7 @@ class HidDevice(
         return buf.toString()
     }
 
-    fun write(bytes: ByteArray): Int {
+    override fun write(bytes: ByteArray): Int {
         validate()
 
         buf.buffer = bytes
@@ -312,12 +384,12 @@ class HidDevice(
         return hid.hid_write(dev.ptr!!, buf, bytes.size)
     }
 
-    fun close() {
+    override fun close() {
         if (init.compareAndSet(true, false)) {
             if (dev.ptr != null) {
                 hid.hid_close(dev.ptr!!)
 
-                println("Device closed: ${vendorId.toHexString()} ${productId.toHexString()}")
+                println("HID device closed: ${vendorId.toHexString()} ${productId.toHexString()}")
             }
         }
     }
@@ -328,11 +400,17 @@ class HidDevice(
     }
 
     override fun toString(): String {
-        return "HidDevice[id='$id', serialNumber='$serialNumber', " +
-                "product='$product', manufacturer='$manufacturer', " +
-                "vendorId=${vendorId.toHexString()}, productId=${productId.toHexString()}, " +
-                "releaseNumber=$releaseNumber, usagePage=$usagePage, usage=$usage, " +
-                "interfaceNumber=$interfaceNumber]"
+        return "HidDevice \n" +
+                "   id='$id'\n" +
+                "   serialNumber='$serialNumber'\n" +
+                "   product='$product'\n" +
+                "   manufacturer='$manufacturer'\n" +
+                "   vendorId=${vendorId.toHexString()}\n" +
+                "   productId=${productId.toHexString()}\n" +
+                "   releaseNumber=${releaseNumber.toHexString()}\n" +
+                "   usagePage=$usagePage\n" +
+                "   usage=$usage\n" +
+                "   interfaceNumber=$interfaceNumber\n"
     }
 
     private fun Short.toHexString(): String = "0x" + Integer.toHexString(this.toInt())

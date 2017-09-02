@@ -4,9 +4,9 @@ import com.sun.jna.*
 import java.util.Arrays
 import kotlin.experimental.or
 
-var HID = Native.loadLibrary("hidapi", NativeHidApi::class.java) as NativeHidApi
+var HID_API = Native.loadLibrary("hidapi", NativeHidApi::class.java) as NativeHidApi
 
-var HID_RAW = Native.loadLibrary("hidapi-hidraw", NativeHidApi::class.java) as NativeHidApi
+var HID_API_RAW = Native.loadLibrary("hidapi-hidraw", NativeHidApi::class.java) as NativeHidApi
 
 interface NativeHidApi : Library {
 
@@ -71,7 +71,7 @@ class Buffer : Structure(), BufferRef {
     }
 }
 
-class Device : Structure(), Structure.ByReference {
+class NativeDevice : Structure(), Structure.ByReference {
     @JvmField
     var ptr: Pointer? = null
 
