@@ -4,7 +4,7 @@ import java.nio.ByteBuffer
 import java.util.*
 
 fun main(args: Array<String>) {
-    val l1 = object : HidDeviceListener {
+    val lsnr = object : HidDeviceListener {
         override fun onConnect(d: HidDevice) {
             println("Connected: $d")
         }
@@ -16,13 +16,13 @@ fun main(args: Array<String>) {
 
     val mgr = HidDeviceManager(mod = HIDRAW)
 
-    mgr += l1
+    mgr += lsnr
 
     mgr.open {
-        val d = device("/dev/hidraw3")
+        val d = device("/dev/hidraw1")
 
         d.open {
-            val buf = ByteBuffer.allocate(16)
+            val buf = ByteBuffer.allocate(64)
 
             val arr = buf.array()
 
